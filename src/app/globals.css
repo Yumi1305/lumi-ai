@@ -1,0 +1,95 @@
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(140,130,120,.28); border-radius: 8px; }
+
+input[type=range] { -webkit-appearance: none; height: 4px; border-radius: 4px; outline: none; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: currentColor; cursor: pointer; }
+
+/* ---- Home orb animations ---- */
+@keyframes breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.055); }
+}
+@keyframes glowL {
+  0%, 100% { box-shadow: 0 0 70px 10px rgba(255,157,122,.30), 0 0 130px 30px rgba(160,114,216,.22); }
+  50% { box-shadow: 0 0 100px 22px rgba(255,157,122,.42), 0 0 180px 50px rgba(160,114,216,.32); }
+}
+@keyframes ringPulse {
+  0% { transform: scale(.92); opacity: .6; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+@keyframes blink {
+  0%, 90%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(.08); }
+}
+@keyframes floaty {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+@keyframes overlayIn {
+  from { backdrop-filter: blur(0); }
+  to { backdrop-filter: blur(7px); }
+}
+@keyframes cardIn {
+  from { transform: translateY(16px) scale(.97); }
+  to { transform: translateY(0) scale(1); }
+}
+/* nudge animation includes the translateX centering so it isn't overridden */
+@keyframes nudgeIn {
+  from { transform: translateX(-50%) translateY(26px); }
+  to { transform: translateX(-50%) translateY(0); }
+}
+
+/* ---- Companion page ---- */
+@keyframes breatheChat {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+@keyframes glowO {
+  0%, 100% { box-shadow: 0 0 60px 8px var(--g1), 0 0 120px 26px var(--g2); }
+  50% { box-shadow: 0 0 90px 20px var(--g1), 0 0 170px 44px var(--g2); }
+}
+@keyframes ringPulseChat {
+  0% { transform: scale(.9); opacity: .6; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+@keyframes floatyChat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+@keyframes wave {
+  0%, 100% { transform: scaleY(.35); }
+  50% { transform: scaleY(1); }
+}
+@keyframes msgIn {
+  from { transform: translateY(9px); }
+  to { transform: translateY(0); }
+}
+@keyframes dot {
+  0%, 60%, 100% { opacity: .25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* ---- Focus page ---- */
+@keyframes breatheOrb {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+@keyframes panelIn {
+  from { transform: translateX(28px); }
+  to { transform: translateX(0); }
+}
+@keyframes fadeUp {
+  from { transform: translateY(10px); }
+  to { transform: translateY(0); }
+}
