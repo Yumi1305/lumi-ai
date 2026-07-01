@@ -1,24 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server'
+import OpenAI from 'openai'
 
-// 0.7 = slow, 1.0 = default, 1.3 = fast
-const VOICE_SPEED = 0.9
+const VALID_VOICES = ['nova', 'shimmer', 'verse', 'fable', 'onyx', 'echo'] as const
+type Voice = typeof VALID_VOICES[number]
 
 export async function POST(req: NextRequest) {
   const { text, voiceId } = await req.json()
-  const apiKey = process.env.ELEVENLABS_API_KEY
+
+  // .env.local uses OPENAI-API-KEY (dash, not underscore)
+  const apiKey = process.env['OPENAI_API_KEY']
   if (!apiKey) return NextResponse.json({ error: 'no key' }, { status: 500 })
 
-  const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-    method: 'POST',
-    headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      text,
-      model_id: 'eleven_turbo_v2_5',
-      voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.3, speed: VOICE_SPEED },
-    }),
+  const voice: Voice = VALID_VOICES.includes(voiceId as Voice) ? voiceId : 'nova'
+
+  const client = new OpenAI({ apiKey })
+
+  // tts-1 is the fast streaming TTS model; tts-1-hd is higher quality but slower
+  const response = await client.audio.speech.create({
+    model: 'tts-1',
+    input: text,
+    voice,
+    speed: 1.0,
+    response_format: 'mp3',
   })
 
-  if (!res.ok) return NextResponse.json({ error: 'elevenlabs error' }, { status: 500 })
-  const buffer = await res.arrayBuffer()
+  const buffer = await response.arrayBuffer()
   return new NextResponse(buffer, { headers: { 'Content-Type': 'audio/mpeg' } })
 }

@@ -71,6 +71,8 @@ export default function HomePage() {
   const [showNudge, setShowNudge] = useState(false)
   const [draftGoal, setDraftGoal] = useState('')
   const [draftDuration, setDraftDuration] = useState(120)
+  const [customMin, setCustomMin] = useState('')
+  const [showCustom, setShowCustom] = useState(false)
   const [now, setNow] = useState(Date.now())
   const [quote, setQuote] = useState('')
 
@@ -165,8 +167,8 @@ export default function HomePage() {
             lumi<span style={{ color: t.accent }}>.</span>
           </div>
           <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
-            <a href="/focus#sounds" style={{ fontSize: '13px', color: t.muted }}>Sounds</a>
-            <a href="/focus#library" style={{ fontSize: '13px', color: t.muted }}>Library</a>
+            <a href="/tasks" style={{ fontSize: '13px', color: t.muted }}>Tasks</a>
+            <a href="/focus" style={{ fontSize: '13px', color: t.muted }}>Focus</a>
             <a href="/shelf" style={{ fontSize: '13px', color: t.muted }}>Shelf</a>
             <a href="/companion" style={{ fontSize: '13px', color: t.muted }}>Talk to Lumi</a>
             <button
@@ -230,10 +232,10 @@ export default function HomePage() {
             }}>
               {/* face */}
               <div style={{ display: 'flex', gap: '52px', marginBottom: '9px', alignItems: 'center', position: 'relative' }}>
-                <div style={{ position: 'absolute', left: '-9px', top: '22px', width: '16px', height: '9px', borderRadius: '50%', background: 'rgba(255,120,120,.45)', filter: 'blur(1px)' }} />
-                <div style={{ position: 'absolute', right: '-9px', top: '22px', width: '16px', height: '9px', borderRadius: '50%', background: 'rgba(255,120,120,.45)', filter: 'blur(1px)' }} />
-                <div style={{ width: '13px', height: '13px', borderRadius: '50%', background: '#3d2740', animation: 'blink 6s ease-in-out infinite' }} />
-                <div style={{ width: '13px', height: '13px', borderRadius: '50%', background: '#3d2740', animation: 'blink 6s ease-in-out infinite' }} />
+                <div style={{ position: 'absolute', left: '-9px', top: '20px', width: '16px', height: '9px', borderRadius: '50%', background: 'rgba(255,120,120,.45)', filter: 'blur(2px)' }} />
+                <div style={{ position: 'absolute', right: '-9px', top: '20px', width: '16px', height: '9px', borderRadius: '50%', background: 'rgba(255,120,120,.45)', filter: 'blur(2px)' }} />
+                <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#3d2740', animation: 'blink 6s ease-in-out infinite' }} />
+                <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#3d2740', animation: 'blink 6s ease-in-out infinite' }} />
               </div>
               {/* smile */}
               <div style={{
@@ -315,9 +317,9 @@ export default function HomePage() {
             </div>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               {durs.map(d => {
-                const active = draftDuration === d.m
+                const active = draftDuration === d.m && !showCustom
                 return (
-                  <button key={d.m} onClick={() => setDraftDuration(d.m)} style={{
+                  <button key={d.m} onClick={() => { setDraftDuration(d.m); setShowCustom(false) }} style={{
                     cursor: 'pointer', fontFamily: S, fontSize: '13px', padding: '9px 15px',
                     borderRadius: '100px', border: `1.5px solid ${active ? t.accent : t.border}`,
                     background: active ? t.accent : 'transparent',
@@ -325,7 +327,34 @@ export default function HomePage() {
                   }}>{d.label}</button>
                 )
               })}
+              <button onClick={() => setShowCustom(c => !c)} style={{
+                cursor: 'pointer', fontFamily: S, fontSize: '13px', padding: '9px 15px',
+                borderRadius: '100px', border: `1.5px solid ${showCustom ? t.accent : t.border}`,
+                background: showCustom ? t.accent : 'transparent',
+                color: showCustom ? '#fff' : t.muted, fontWeight: showCustom ? 500 : 400,
+              }}>Custom</button>
             </div>
+            {showCustom && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px' }}>
+                <input
+                  type="number"
+                  min={1}
+                  placeholder="minutes"
+                  value={customMin}
+                  onChange={e => {
+                    setCustomMin(e.target.value)
+                    const n = parseInt(e.target.value)
+                    if (!isNaN(n) && n > 0) setDraftDuration(n)
+                  }}
+                  style={{
+                    width: '110px', fontFamily: S, fontSize: '14px', color: t.text,
+                    background: t.field, border: `1px solid ${t.border}`,
+                    borderRadius: '10px', padding: '9px 13px', outline: 'none',
+                  }}
+                />
+                <span style={{ fontSize: '13px', color: t.muted }}>min</span>
+              </div>
+            )}
 
             <button onClick={saveGoal} style={{
               marginTop: '24px', width: '100%', cursor: 'pointer', fontFamily: S,

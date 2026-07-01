@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import * as audio from '@/lib/audioEngine'
 import type { SoundState } from '@/lib/audioEngine'
 
@@ -66,6 +66,15 @@ function parseMedia(url: string): { src: string; h: string } | null {
   return null
 }
 
+// ---- timer techniques ----
+const TECHNIQUES = {
+  pomodoro: { label: 'Pomodoro', work: 25, brk: 5, desc: '25 min focus, 5 min rest' },
+  '5217':   { label: '52 / 17',  work: 52, brk: 17, desc: '52 min focus, 17 min rest' },
+  '90min':  { label: '90 min',   work: 90, brk: 20, desc: '90 min deep work, 20 min rest' },
+  custom:   { label: 'Custom',   work: 25, brk: 5,  desc: 'Set your own times' },
+} as const
+type Tech = keyof typeof TECHNIQUES
+
 // ---- component ----
 export default function FocusPage() {
   const [dark, setDark] = useState<boolean | null>(null)
@@ -83,23 +92,104 @@ export default function FocusPage() {
   const [cat, setCat] = useState('All')
   const [openCard, setOpenCard] = useState<LibCard | null>(null)
 
+  // timer state
+  const [tech, setTech] = useState<Tech>('pomodoro')
+  const [customWork, setCustomWork] = useState(25)
+  const [customBrk, setCustomBrk] = useState(5)
+  const [timerPhase, setTimerPhase] = useState<'work' | 'break'>('work')
+  const [timerSec, setTimerSec] = useState(25 * 60)
+  const [timerRunning, setTimerRunning] = useState(false)
+  const [pomRound, setPomRound] = useState(1)
+
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const timerSecRef = useRef(timerSec)
+  const timerPhaseRef = useRef(timerPhase)
+  const techRef = useRef(tech)
+  const customWorkRef = useRef(customWork)
+  const customBrkRef = useRef(customBrk)
+  const pomRoundRef = useRef(pomRound)
+  timerSecRef.current = timerSec
+  timerPhaseRef.current = timerPhase
+  techRef.current = tech
+  customWorkRef.current = customWork
+  customBrkRef.current = customBrk
+  pomRoundRef.current = pomRound
+
   const btRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const bcRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const bActiveRef = useRef(false)
   const patternRef = useRef(pattern)
   patternRef.current = pattern
 
+  function getWorkSec() {
+    const t = techRef.current
+    return (t === 'custom' ? customWorkRef.current : TECHNIQUES[t].work) * 60
+  }
+  function getBrkSec() {
+    const t = techRef.current
+    return (t === 'custom' ? customBrkRef.current : TECHNIQUES[t].brk) * 60
+  }
+
+  const advanceTimer = useCallback(() => {
+    const next = timerSecRef.current - 1
+    if (next > 0) {
+      setTimerSec(next)
+    } else {
+      if (timerPhaseRef.current === 'work') {
+        const newRound = pomRoundRef.current + 1
+        setPomRound(newRound)
+        pomRoundRef.current = newRound
+        setTimerPhase('break')
+        timerPhaseRef.current = 'break'
+        setTimerSec(getBrkSec())
+      } else {
+        setTimerPhase('work')
+        timerPhaseRef.current = 'work'
+        setTimerSec(getWorkSec())
+      }
+    }
+  }, [])
+
+  function startTimer() {
+    setTimerRunning(true)
+    timerRef.current = setInterval(advanceTimer, 1000)
+  }
+
+  function pauseTimer() {
+    setTimerRunning(false)
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
+  }
+
+  function resetTimer() {
+    pauseTimer()
+    setTimerPhase('work')
+    timerPhaseRef.current = 'work'
+    setPomRound(1)
+    pomRoundRef.current = 1
+    setTimerSec(getWorkSec())
+  }
+
+  function selectTech(t: Tech) {
+    pauseTimer()
+    setTech(t)
+    techRef.current = t
+    setTimerPhase('work')
+    timerPhaseRef.current = 'work'
+    setPomRound(1)
+    const work = t === 'custom' ? customWorkRef.current : TECHNIQUES[t].work
+    setTimerSec(work * 60)
+  }
+
   useEffect(() => {
     const raw = localStorage.getItem('lumi:dark')
     setDark(raw === null ? false : raw === '1')
 
-    // Subscribe to audio engine — sounds persist across navigation
     const unsub = audio.subscribe(() => setSounds(audio.getSounds()))
     return () => {
       unsub()
       if (btRef.current) clearTimeout(btRef.current)
       if (bcRef.current) clearInterval(bcRef.current)
-      // Intentionally NOT stopping sounds here — they persist until explicitly stopped
+      if (timerRef.current) clearInterval(timerRef.current)
     }
   }, [])
 
@@ -147,9 +237,10 @@ export default function FocusPage() {
             <span style={{ fontSize: '16px' }}>‹</span> Home
           </a>
           <div style={{ display: 'flex', gap: '22px', alignItems: 'center' }}>
-            <a href="#sounds" style={{ fontSize: '13px', color: t.muted }}>Sounds</a>
-            <a href="#music"  style={{ fontSize: '13px', color: t.muted }}>Music</a>
+            <a href="#sounds"  style={{ fontSize: '13px', color: t.muted }}>Sounds</a>
+            <a href="#music"   style={{ fontSize: '13px', color: t.muted }}>Music</a>
             <a href="#breathe" style={{ fontSize: '13px', color: t.muted }}>Breathe</a>
+            <a href="#timer"   style={{ fontSize: '13px', color: t.muted }}>Timer</a>
             <a href="#library" style={{ fontSize: '13px', color: t.muted }}>Library</a>
             <button
               onClick={() => { const nd = !dark; localStorage.setItem('lumi:dark', nd ? '1' : '0'); setDark(nd) }}
@@ -264,6 +355,91 @@ export default function FocusPage() {
               {breathing ? 'Stop' : 'Begin'}
             </button>
             <div style={{ fontSize: '12.5px', color: t.muted, marginTop: '12px' }}>{PATTERN_META[pattern].hint}</div>
+          </div>
+        </div>
+
+        {/* ===== TIMER ===== */}
+        <div id="timer" style={{ scrollMarginTop: '80px', marginBottom: '46px' }}>
+          <div style={{ fontSize: '13px', letterSpacing: '.13em', textTransform: 'uppercase', color: t.muted, marginBottom: '16px' }}>Focus timer</div>
+          <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: '18px', padding: '28px 22px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+
+            {/* technique selector */}
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center', marginBottom: '24px' }}>
+              {(Object.keys(TECHNIQUES) as Tech[]).map(k => {
+                const active = tech === k
+                return (
+                  <button key={k} onClick={() => selectTech(k)} style={{
+                    cursor: 'pointer', fontFamily: S, fontSize: '13px', padding: '9px 16px',
+                    borderRadius: '100px', border: `1.5px solid ${active ? t.accent : t.border}`,
+                    background: active ? t.accent : 'transparent',
+                    color: active ? '#fff' : t.muted, fontWeight: active ? 500 : 400,
+                  }}>{TECHNIQUES[k].label}</button>
+                )
+              })}
+            </div>
+
+            {/* custom time inputs */}
+            {tech === 'custom' && (
+              <div style={{ display: 'flex', gap: '20px', marginBottom: '22px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                  <div style={{ fontSize: '11px', letterSpacing: '.1em', textTransform: 'uppercase', color: t.muted }}>Work</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <input
+                      type="number" min={1} max={180} value={customWork}
+                      onChange={e => {
+                        const v = Math.max(1, parseInt(e.target.value) || 1)
+                        setCustomWork(v)
+                        customWorkRef.current = v
+                        if (!timerRunning && timerPhase === 'work') setTimerSec(v * 60)
+                      }}
+                      style={{ width: '60px', fontFamily: S, fontSize: '16px', textAlign: 'center', color: t.text, background: t.field, border: `1px solid ${t.border}`, borderRadius: '9px', padding: '8px', outline: 'none' }}
+                    />
+                    <span style={{ fontSize: '13px', color: t.muted }}>min</span>
+                  </div>
+                </div>
+                <div style={{ fontSize: '18px', color: t.border }}>·</div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                  <div style={{ fontSize: '11px', letterSpacing: '.1em', textTransform: 'uppercase', color: t.muted }}>Break</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <input
+                      type="number" min={1} max={60} value={customBrk}
+                      onChange={e => {
+                        const v = Math.max(1, parseInt(e.target.value) || 1)
+                        setCustomBrk(v)
+                        customBrkRef.current = v
+                        if (!timerRunning && timerPhase === 'break') setTimerSec(v * 60)
+                      }}
+                      style={{ width: '60px', fontFamily: S, fontSize: '16px', textAlign: 'center', color: t.text, background: t.field, border: `1px solid ${t.border}`, borderRadius: '9px', padding: '8px', outline: 'none' }}
+                    />
+                    <span style={{ fontSize: '13px', color: t.muted }}>min</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* phase indicator */}
+            <div style={{ fontSize: '11px', letterSpacing: '.15em', textTransform: 'uppercase', color: timerPhase === 'work' ? t.accent : t.muted, marginBottom: '6px' }}>
+              {timerPhase === 'work' ? 'Focus' : 'Break'}{tech === 'pomodoro' ? ` · Round ${pomRound}` : ''}
+            </div>
+
+            {/* countdown */}
+            <div style={{ fontFamily: SE, fontSize: '72px', fontWeight: 300, lineHeight: 1, letterSpacing: '-.02em', marginBottom: '28px', color: t.text }}>
+              {String(Math.floor(timerSec / 60)).padStart(2, '0')}:{String(timerSec % 60).padStart(2, '0')}
+            </div>
+
+            {/* controls */}
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <button
+                onClick={() => timerRunning ? pauseTimer() : startTimer()}
+                style={{ cursor: 'pointer', fontFamily: S, fontSize: '14px', fontWeight: 500, color: '#fff', background: t.accent, border: 'none', borderRadius: '100px', padding: '12px 32px' }}
+              >{timerRunning ? 'Pause' : !timerRunning && pomRound === 1 && timerPhase === 'work' ? 'Start' : 'Resume'}</button>
+              <button
+                onClick={resetTimer}
+                style={{ cursor: 'pointer', fontFamily: S, fontSize: '14px', color: t.muted, background: 'transparent', border: `1.5px solid ${t.border}`, borderRadius: '100px', padding: '12px 22px' }}
+              >Reset</button>
+            </div>
+
+            <div style={{ fontSize: '12.5px', color: t.muted, marginTop: '14px' }}>{TECHNIQUES[tech].desc}</div>
           </div>
         </div>
 

@@ -20,6 +20,14 @@ interface MoodDef {
   kw: string[]
 }
 
+interface LumiProfile {
+  name?: string
+  about?: string
+  lumiNotes?: string
+  lumiTopics?: string[]
+  updatedAt?: number
+}
+
 // ---- constants ----
 const MOODS: Record<string, MoodDef> = {
   neutral: { line:"I'm here with you.", grad:'radial-gradient(circle at 36% 30%,#ffe7cf 0%,#ff9d7a 36%,#a072d8 80%,#6c4fb0 100%)', g1:'rgba(255,157,122,.32)', g2:'rgba(160,114,216,.30)', breath:'7s', kw:[] },
@@ -40,13 +48,13 @@ const SAMPLES = [
 ]
 
 const VOICES = [
-  { id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel', desc: 'calm' },
-  { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella', desc: 'soft' },
-  { id: 'ErXwobaYiN019PkySvjV', name: 'Antoni', desc: 'warm' },
-  { id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', desc: 'deep' },
-  { id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli', desc: 'bright' },
+  { id: 'nova',    name: 'Nova',    desc: 'warm' },
+  { id: 'shimmer', name: 'Shimmer', desc: 'soft' },
+  { id: 'verse',   name: 'Verse',   desc: 'calm' },
+  { id: 'fable',   name: 'Fable',   desc: 'bright' },
+  { id: 'onyx',    name: 'Onyx',    desc: 'deep' },
 ]
-const DEFAULT_VOICE = VOICES[0].id
+const DEFAULT_VOICE = 'nova'
 
 const EXIT_PHRASES = [
   "okay i'm ready", "i'm ready now", "ready now", "i'm good now",
@@ -110,25 +118,6 @@ function reflect(text: string, mood: string): string {
   return open + suggest + ' ' + q
 }
 
-function splitIntoTexts(text: string): string[] {
-  const sentences = text.match(/[^.!?]*[.!?]+["']?/g)
-  if (!sentences || sentences.length <= 1) return [text.trim()]
-  return sentences.map(s => s.trim()).filter(Boolean)
-}
-
-async function getReply(text: string, mood: string, messages: Message[]): Promise<string> {
-  try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, text, mood }),
-    })
-    if (!res.ok) throw new Error('api error')
-    const data = await res.json()
-    if (data.reply) return data.reply
-  } catch {}
-  return reflect(text, mood)
-}
 
 // ---- theme ----
 const WARMTH = 'Balanced' as const
@@ -157,6 +146,8 @@ export default function CompanionPage() {
   const [mood, setMood] = useState('neutral')
   const [voiceConvMode, setVoiceConvModeState] = useState(false)
   const [selectedVoice, setSelectedVoiceState] = useState(DEFAULT_VOICE)
+  const [profile, setProfile] = useState<LumiProfile>({})
+  const [showProfile, setShowProfile] = useState(false)
 
   const transcriptRef = useRef<HTMLDivElement>(null)
   const recRef = useRef<InstanceType<SR> | null>(null)
@@ -167,6 +158,12 @@ export default function CompanionPage() {
   const voiceConvModeRef = useRef(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const selectedVoiceRef = useRef(DEFAULT_VOICE)
+  const profileRef = useRef<LumiProfile>({})
+  // sentence-level TTS queue for streaming
+  const ttsQueueRef = useRef<string[]>([])
+  const ttsDrainingRef = useRef(false)
+  const streamDoneRef = useRef(true)
+  const onVoiceTurnDoneRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     if (transcriptRef.current) {
@@ -179,6 +176,8 @@ export default function CompanionPage() {
     setDark(raw === null ? false : raw === '1')
     const savedVoice = localStorage.getItem('lumi:voice')
     if (savedVoice) { selectedVoiceRef.current = savedVoice; setSelectedVoiceState(savedVoice) }
+    const savedProfile = storageGet<LumiProfile>('lumi:profile')
+    if (savedProfile) { profileRef.current = savedProfile; setProfile(savedProfile) }
 
     let msgs = storageGet<Message[]>('lumi:chat') || []
     const goal = storageGet<{ text: string }>('lumi:goal')
@@ -230,62 +229,182 @@ export default function CompanionPage() {
     localStorage.setItem('lumi:voice', id)
   }
 
-  async function speakLumi(text: string, onDone?: () => void) {
-    if (typeof window === 'undefined') return
-    // Cancel current playback without flickering the speaking state
-    if (audioRef.current) {
-      audioRef.current.onended = null; audioRef.current.onerror = null
-      audioRef.current.pause(); audioRef.current = null
-    }
-    window.speechSynthesis?.cancel()
-    setSpeaking(true)
+  function updateProfileField(key: 'name' | 'about', value: string) {
+    const updated = { ...profileRef.current, [key]: value }
+    profileRef.current = updated
+    setProfile(updated)
+    storageSet('lumi:profile', updated)
+  }
 
+  function clearChat() {
+    const h = new Date().getHours()
+    const greet = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
+    const opener = `${greet}. I'm Lumi — it's good to see you. How are you feeling right now?`
+    const initial = [{ role: 'lumi' as const, text: opener, mood: 'neutral' }]
+    setMessages(initial)
+    storageSet('lumi:chat', initial)
+    setMood('neutral')
+    setShowProfile(false)
+  }
+
+  function runProfileUpdate(msgs: Message[]) {
+    const lumiCount = msgs.filter(m => m.role === 'lumi').length
+    if (lumiCount < 4) return
+    fetch('/api/remember', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: msgs }),
+    }).then(r => r.json()).then(data => {
+      if (!data.notes && !data.name) return
+      setProfile(prev => {
+        const updated: LumiProfile = {
+          ...prev,
+          ...(data.notes ? { lumiNotes: data.notes } : {}),
+          ...(data.topics ? { lumiTopics: data.topics } : {}),
+          ...(data.name && !prev.name ? { name: data.name } : {}),
+          updatedAt: Date.now(),
+        }
+        profileRef.current = updated
+        storageSet('lumi:profile', updated)
+        return updated
+      })
+    }).catch(() => {})
+  }
+
+  // Fetch TTS audio as a buffer (does not play it)
+  async function fetchTTSBuffer(text: string): Promise<ArrayBuffer | null> {
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, voiceId: selectedVoiceRef.current }),
       })
-      if (!res.ok) throw new Error('tts failed')
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const audio = new Audio(url)
-      audioRef.current = audio
-      audio.onended = () => {
-        setSpeaking(false); audioRef.current = null
-        URL.revokeObjectURL(url); onDone?.()
-      }
-      audio.onerror = () => {
-        setSpeaking(false); audioRef.current = null
-        URL.revokeObjectURL(url)
-        webSpeakLumi(text, onDone)
-      }
-      await audio.play()
+      if (!res.ok) return null
+      return await res.arrayBuffer()
     } catch {
-      webSpeakLumi(text, onDone)
+      return null
     }
   }
 
-  function webSpeakLumi(text: string, onDone?: () => void) {
-    if (typeof window === 'undefined' || !window.speechSynthesis) { setSpeaking(false); onDone?.(); return }
-    const utt = new SpeechSynthesisUtterance(text)
-    utt.rate = 0.9; utt.pitch = 1.05; utt.volume = 1
-    utt.onend = () => { setSpeaking(false); onDone?.() }
-    utt.onerror = () => { setSpeaking(false); onDone?.() }
-    const trySpeak = () => {
-      const voices = window.speechSynthesis.getVoices()
-      const preferred = voices.find(v =>
-        v.name.includes('Samantha') || v.name.includes('Karen') ||
-        v.name.includes('Moira') || (v.lang.startsWith('en') && !v.name.includes('Google'))
-      )
-      if (preferred) utt.voice = preferred
-      window.speechSynthesis.speak(utt)
+  // Play a pre-fetched audio buffer; falls back to web speech if null
+  async function playBuffer(buffer: ArrayBuffer | null, fallbackText: string): Promise<void> {
+    if (!buffer) return webSpeakLumiP(fallbackText)
+    return new Promise(async (resolve) => {
+      if (audioRef.current) {
+        audioRef.current.onended = null; audioRef.current.onerror = null
+        audioRef.current.pause(); audioRef.current = null
+      }
+      try {
+        const url = URL.createObjectURL(new Blob([buffer], { type: 'audio/mpeg' }))
+        const audio = new Audio(url)
+        audioRef.current = audio
+        audio.onended = () => { audioRef.current = null; URL.revokeObjectURL(url); resolve() }
+        audio.onerror = () => { audioRef.current = null; URL.revokeObjectURL(url); webSpeakLumiP(fallbackText).then(resolve) }
+        await audio.play()
+      } catch {
+        webSpeakLumiP(fallbackText).then(resolve)
+      }
+    })
+  }
+
+  function webSpeakLumiP(text: string): Promise<void> {
+    return new Promise(resolve => {
+      if (typeof window === 'undefined' || !window.speechSynthesis) { resolve(); return }
+      const utt = new SpeechSynthesisUtterance(text)
+      utt.rate = 0.92; utt.pitch = 1.05; utt.volume = 1
+      utt.onend = () => resolve()
+      utt.onerror = () => resolve()
+      const trySpeak = () => {
+        const voices = window.speechSynthesis.getVoices()
+        const preferred = voices.find(v =>
+          v.name.includes('Samantha') || v.name.includes('Karen') ||
+          v.name.includes('Moira') || (v.lang.startsWith('en') && !v.name.includes('Google'))
+        )
+        if (preferred) utt.voice = preferred
+        window.speechSynthesis.speak(utt)
+      }
+      if (window.speechSynthesis.getVoices().length > 0) trySpeak()
+      else window.speechSynthesis.onvoiceschanged = trySpeak
+    })
+  }
+
+  // Drains the TTS queue with lookahead: fetches the next sentence's audio
+  // while the current one is still playing, so transitions are seamless.
+  async function drainTTSQueue() {
+    if (ttsDrainingRef.current) return
+    ttsDrainingRef.current = true
+    setSpeaking(true)
+
+    let prefetchedText: string | null = null
+    let prefetchedPromise: Promise<ArrayBuffer | null> | null = null
+
+    while (ttsQueueRef.current.length > 0 || !streamDoneRef.current) {
+      if (ttsQueueRef.current.length === 0) {
+        await new Promise(r => setTimeout(r, 40))
+        continue
+      }
+
+      const sentence = ttsQueueRef.current.shift()!
+
+      // Use prefetched buffer if it matches, otherwise fetch fresh
+      const bufferPromise = (prefetchedText === sentence && prefetchedPromise)
+        ? prefetchedPromise
+        : fetchTTSBuffer(sentence)
+      prefetchedText = null; prefetchedPromise = null
+
+      // Immediately kick off the next fetch in parallel
+      if (ttsQueueRef.current.length > 0) {
+        prefetchedText = ttsQueueRef.current[0]
+        prefetchedPromise = fetchTTSBuffer(ttsQueueRef.current[0])
+      }
+
+      const buffer = await bufferPromise
+
+      // If more sentences arrived while we were fetching, start the next prefetch now
+      if (!prefetchedPromise && ttsQueueRef.current.length > 0) {
+        prefetchedText = ttsQueueRef.current[0]
+        prefetchedPromise = fetchTTSBuffer(ttsQueueRef.current[0])
+      }
+
+      await playBuffer(buffer, sentence)
+
+      if (!voiceConvModeRef.current && lastInputModeRef.current === 'voice') break
     }
-    if (window.speechSynthesis.getVoices().length > 0) trySpeak()
-    else window.speechSynthesis.onvoiceschanged = trySpeak
+
+    ttsQueueRef.current = []
+    ttsDrainingRef.current = false
+    setSpeaking(false)
+    const cb = onVoiceTurnDoneRef.current
+    onVoiceTurnDoneRef.current = null
+    cb?.()
+  }
+
+  function enqueueTTS(sentence: string) {
+    ttsQueueRef.current.push(sentence)
+    if (!ttsDrainingRef.current) drainTTSQueue().catch(() => { ttsDrainingRef.current = false; setSpeaking(false) })
+  }
+
+  // Single-shot speak for non-streaming use (greetings, farewell, idle prompts)
+  async function speakLumi(text: string, onDone?: () => void) {
+    if (typeof window === 'undefined') return
+    ttsQueueRef.current = []
+    ttsDrainingRef.current = false
+    if (audioRef.current) {
+      audioRef.current.onended = null; audioRef.current.onerror = null
+      audioRef.current.pause(); audioRef.current = null
+    }
+    window.speechSynthesis?.cancel()
+    setSpeaking(true)
+    const buffer = await fetchTTSBuffer(text)
+    await playBuffer(buffer, text)
+    setSpeaking(false)
+    onDone?.()
   }
 
   function stopSpeaking() {
+    ttsQueueRef.current = []
+    ttsDrainingRef.current = false
+    streamDoneRef.current = true
     if (audioRef.current) {
       audioRef.current.onended = null; audioRef.current.onerror = null
       audioRef.current.pause(); audioRef.current = null
@@ -315,12 +434,13 @@ export default function CompanionPage() {
     armIdle()
   }
 
-  function sendMessage(text: string, mode: 'voice' | 'text' = 'text') {
+  async function sendMessage(text: string, mode: 'voice' | 'text' = 'text') {
     text = (text || '').trim()
     if (!text) return
     lastInputModeRef.current = mode
     const detectedMood = detectMood(text) || mood || 'neutral'
     const snapshot = messages
+
     setMessages(prev => {
       const next = [...prev, { role: 'me' as const, text, mood: detectedMood }]
       storageSet('lumi:chat', next)
@@ -330,27 +450,107 @@ export default function CompanionPage() {
     setMood(detectedMood)
     setThinking(true)
     if (idleRef.current) clearTimeout(idleRef.current)
-    getReply(text, detectedMood, snapshot).then(reply => {
-      const chunks = splitIntoTexts(reply)
-      setThinking(false)
-      chunks.forEach((chunk, i) => {
-        setTimeout(() => {
-          setMessages(prev => {
-            const next = [...prev, { role: 'lumi' as const, text: chunk, mood: detectedMood }]
-            storageSet('lumi:chat', next)
-            return next
-          })
-          if (i === chunks.length - 1) {
-            armIdle()
-            if (lastInputModeRef.current === 'voice') {
-              speakLumi(reply, () => {
-                if (voiceConvModeRef.current) startVoice()
-              })
-            }
-          }
-        }, i * 650)
+
+    // Reset TTS queue state for this turn
+    ttsQueueRef.current = []
+    ttsDrainingRef.current = false
+    streamDoneRef.current = false
+    // After all sentences play, restart listening (startVoice is hoisted; ref avoids stale closure)
+    onVoiceTurnDoneRef.current = mode === 'voice'
+      ? () => { if (voiceConvModeRef.current) startVoice() }
+      : null
+
+    let sentenceBuffer = ''
+    let serverMood = detectedMood
+    let gotText = false
+
+    function flushSentences(final = false) {
+      // Extract complete sentences (ending with . ! ?) from buffer
+      const re = /[^.!?]*[.!?]+["']?\s*/g
+      let lastIndex = 0; let m: RegExpExecArray | null
+      while ((m = re.exec(sentenceBuffer)) !== null) {
+        const sentence = m[0].trim()
+        lastIndex = re.lastIndex
+        if (!sentence) continue
+        setMessages(prev => {
+          const next = [...prev, { role: 'lumi' as const, text: sentence, mood: serverMood }]
+          storageSet('lumi:chat', next)
+          return next
+        })
+        if (mode === 'voice') enqueueTTS(sentence)
+      }
+      sentenceBuffer = sentenceBuffer.slice(lastIndex)
+      // On final flush, emit anything left (no terminal punctuation)
+      if (final && sentenceBuffer.trim()) {
+        const tail = sentenceBuffer.trim()
+        setMessages(prev => {
+          const next = [...prev, { role: 'lumi' as const, text: tail, mood: serverMood }]
+          storageSet('lumi:chat', next)
+          return next
+        })
+        if (mode === 'voice') enqueueTTS(tail)
+        sentenceBuffer = ''
+      }
+    }
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: snapshot, text, mood: detectedMood, profile: profileRef.current }),
       })
-    })
+      if (!res.ok || !res.body) throw new Error('stream error')
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let evtBuf = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        evtBuf += decoder.decode(value, { stream: true })
+        const lines = evtBuf.split('\n')
+        evtBuf = lines.pop() || ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const raw = line.slice(6).trim()
+          if (raw === '[DONE]') continue
+          try {
+            const parsed = JSON.parse(raw)
+            if (parsed.mood) serverMood = parsed.mood
+            if (!parsed.text) continue
+            if (!gotText) { gotText = true; setThinking(false) }
+            sentenceBuffer += parsed.text
+            flushSentences()
+          } catch {}
+        }
+      }
+    } catch {}
+
+    setThinking(false)
+    flushSentences(true)
+    streamDoneRef.current = true
+
+    if (!gotText) {
+      // Fallback to local reflection if stream returned nothing
+      const fallback = reflect(text, detectedMood)
+      pushLumi(fallback, detectedMood)
+      if (mode === 'voice') {
+        speakLumi(fallback, () => { if (voiceConvModeRef.current) startVoice() })
+        return
+      }
+    }
+
+    armIdle()
+    setTimeout(() => {
+      setMessages(current => {
+        const lumiCount = current.filter(m => m.role === 'lumi').length
+        if (lumiCount >= 4 && Date.now() - (profileRef.current.updatedAt || 0) > 300000) {
+          runProfileUpdate(current)
+        }
+        return current
+      })
+    }, 200)
   }
 
   function startVoice() {
@@ -468,16 +668,22 @@ export default function CompanionPage() {
 
         {/* top bar */}
         <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '18px 26px', maxWidth: '1080px', width: '100%', margin: '0 auto' }}>
-          <a href="/" style={{ display: 'flex', alignItems: 'center', gap: '9px', fontSize: '13px', color: t.muted }}>
+          <a href="/" style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '9px', fontSize: '13px', color: t.muted }}>
             <span style={{ fontSize: '16px' }}>‹</span> Home
           </a>
           <div style={{ fontFamily: SE, fontSize: '20px', color: t.text }}>
             lumi<span style={{ color: t.accent }}>.</span>
           </div>
-          <button
-            onClick={() => { const nd = !dark; localStorage.setItem('lumi:dark', nd ? '1' : '0'); setDark(nd) }}
-            style={{ cursor: 'pointer', border: `1px solid ${t.border}`, background: t.card, color: t.text, borderRadius: '100px', padding: '6px 13px', fontFamily: S, fontSize: '12px' }}
-          >{dark ? '☾  Dark' : '☀  Light'}</button>
+          <div style={{ flex: 1, display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => setShowProfile(true)}
+              style={{ cursor: 'pointer', border: `1px solid ${t.border}`, background: t.card, color: t.text, borderRadius: '100px', padding: '6px 13px', fontFamily: S, fontSize: '12px' }}
+            >✦ Memory</button>
+            <button
+              onClick={() => { const nd = !dark; localStorage.setItem('lumi:dark', nd ? '1' : '0'); setDark(nd) }}
+              style={{ cursor: 'pointer', border: `1px solid ${t.border}`, background: t.card, color: t.text, borderRadius: '100px', padding: '6px 13px', fontFamily: S, fontSize: '12px' }}
+            >{dark ? '☾  Dark' : '☀  Light'}</button>
+          </div>
         </div>
 
         {/* orb hero */}
@@ -607,6 +813,84 @@ export default function CompanionPage() {
           </div>
         </div>
       </div>
+
+      {/* ===== MEMORY PANEL ===== */}
+      {showProfile && (
+        <div
+          onClick={() => setShowProfile(false)}
+          style={{ position: 'fixed', inset: 0, background: dark ? 'rgba(10,8,20,.6)' : 'rgba(40,36,32,.45)', backdropFilter: 'blur(5px)', zIndex: 60, display: 'flex', justifyContent: 'flex-end' } as React.CSSProperties}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: '100%', maxWidth: '360px', height: '100%',
+              background: dark ? '#1c1830' : '#ffffff',
+              borderLeft: `1px solid ${t.border}`,
+              padding: '28px 24px',
+              overflowY: 'auto',
+              display: 'flex', flexDirection: 'column', gap: '22px',
+              animation: 'msgIn .3s ease',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontFamily: SE, fontSize: '21px', color: t.text }}>Memory</div>
+              <div onClick={() => setShowProfile(false)} style={{ cursor: 'pointer', fontSize: '22px', color: t.muted, lineHeight: 1 }}>×</div>
+            </div>
+
+            <div style={{ fontSize: '13px', color: t.muted, lineHeight: 1.6 }}>
+              Lumi uses this every session — like a CLAUDE.md for your conversations.
+            </div>
+
+            <div>
+              <div style={{ fontSize: '10.5px', letterSpacing: '.1em', textTransform: 'uppercase', color: t.muted, marginBottom: '7px' }}>Your name</div>
+              <input
+                value={profile.name || ''}
+                onChange={e => updateProfileField('name', e.target.value)}
+                placeholder="What should Lumi call you?"
+                style={{ width: '100%', boxSizing: 'border-box', fontFamily: S, fontSize: '14px', color: t.text, background: t.field, border: `1px solid ${t.border}`, borderRadius: '10px', padding: '10px 13px', outline: 'none' }}
+              />
+            </div>
+
+            <div>
+              <div style={{ fontSize: '10.5px', letterSpacing: '.1em', textTransform: 'uppercase', color: t.muted, marginBottom: '7px' }}>Tell Lumi about yourself</div>
+              <textarea
+                value={profile.about || ''}
+                onChange={e => updateProfileField('about', e.target.value)}
+                placeholder="What's going on in your life? What do you want Lumi to always know?"
+                rows={4}
+                style={{ width: '100%', boxSizing: 'border-box', fontFamily: S, fontSize: '14px', color: t.text, background: t.field, border: `1px solid ${t.border}`, borderRadius: '10px', padding: '10px 13px', outline: 'none', resize: 'none', lineHeight: 1.55 }}
+              />
+            </div>
+
+            <div>
+              <div style={{ fontSize: '10.5px', letterSpacing: '.1em', textTransform: 'uppercase', color: t.muted, marginBottom: '7px' }}>Lumi remembers</div>
+              {profile.lumiNotes ? (
+                <>
+                  <div style={{ fontSize: '13.5px', color: t.text, background: t.field, border: `1px solid ${t.border}`, borderRadius: '10px', padding: '12px 14px', lineHeight: 1.7 }}>
+                    {profile.lumiNotes}
+                  </div>
+                  {profile.updatedAt && (
+                    <div style={{ fontSize: '11px', color: t.muted, marginTop: '5px' }}>
+                      Updated {new Date(profile.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ fontSize: '13px', color: t.muted, fontStyle: 'italic', lineHeight: 1.6, background: t.field, border: `1px solid ${t.border}`, borderRadius: '10px', padding: '12px 14px' }}>
+                  After a few conversations, Lumi will start building a picture of you here.
+                </div>
+              )}
+            </div>
+
+            <div style={{ flex: 1 }} />
+
+            <button
+              onClick={clearChat}
+              style={{ cursor: 'pointer', fontFamily: S, fontSize: '12.5px', color: t.muted, background: 'transparent', border: `1px solid ${t.border}`, borderRadius: '100px', padding: '9px 18px', alignSelf: 'flex-start' }}
+            >↺ Clear conversation</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
